@@ -27,4 +27,4 @@ database_name = "daily-checkin-panel"
 #
 # 懒得手动做也行：直接运行仓库根目录的一键部署脚本 `node deploy.mjs`，
 # 它会自动建库、自动把 id 填到这一行、再自动部署。
-database_id = "REPLACE_ME_WITH_YOUR_OWN_D1_ID"
+database_id = "dc97de6e-6ade-4e72-8a85-136deea9fc46"
