@@ -72,8 +72,16 @@ function safeJson(text, fallback = {}) {
   }
 }
 
-function sessionCookie(sid, maxAgeSec) {
-  return `sid=${encodeURIComponent(sid)}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${maxAgeSec}`;
+// Secure 只在真正的 https 下加：局域网 http（如 NAS 的 http://192.168.x.x:8787）
+// 下浏览器会直接拒收 Secure Cookie，导致「登录成功却所有接口 401、页面一直加载中」。
+// 反向代理（Caddy/nginx）后看 X-Forwarded-Proto 识别 https。
+function sessionCookie(sid, maxAgeSec, req) {
+  let secure = false;
+  try {
+    const proto = (req.headers.get('x-forwarded-proto') || new URL(req.url).protocol || '').toLowerCase();
+    secure = proto === 'https:' || proto === 'https';
+  } catch { /* 识别不出就按 http 处理，至少保证局域网能用 */ }
+  return `sid=${encodeURIComponent(sid)}; Path=/; HttpOnly; SameSite=Lax;${secure ? ' Secure;' : ''} Max-Age=${maxAgeSec}`;
 }
 
 async function authed(env, req) {
@@ -262,7 +270,8 @@ async function handleApi(req, env, url) {
   // ---- 公开接口 ----
   if (path === '/api/status' && method === 'GET') {
     const hash = await getSetting(env.DB, 'admin_hash');
-    return json({ setup_needed: !hash, logged_in: await authed(env, req) });
+    const runtime = env.RUNTIME === 'docker' ? 'docker' : 'workers';
+    return json({ setup_needed: !hash, logged_in: await authed(env, req), runtime });
   }
 
   if (path === '/api/setup' && method === 'POST') {
@@ -271,7 +280,7 @@ async function handleApi(req, env, url) {
     if (!password || String(password).length < 8) return json({ error: '密码至少 8 位' }, 400);
     await setSetting(env.DB, 'admin_hash', await hashPassword(String(password)));
     const sid = await createSession(env);
-    return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(sid, SESSION_TTL_MS / 1000) });
+    return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(sid, SESSION_TTL_MS / 1000, req) });
   }
 
   if (path === '/api/login' && method === 'POST') {
@@ -289,7 +298,7 @@ async function handleApi(req, env, url) {
     }
     await clearLoginFail(env, req);
     const sid = await createSession(env);
-    return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(sid, SESSION_TTL_MS / 1000) });
+    return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(sid, SESSION_TTL_MS / 1000, req) });
   }
 
   // ---- 外部上报接口（VM 定时任务 / 浏览器扩展用 API Key 认证，不走 session） ----
@@ -905,7 +914,7 @@ async function handleApi(req, env, url) {
   if (path === '/api/logout' && method === 'POST') {
     const sid = parseCookies(req).sid;
     if (sid) await env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(sid).run();
-    return json({ ok: true }, 200, { 'Set-Cookie': 'sid=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0' });
+    return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie('', 0, req) });
   }
 
   if (path === '/api/me' && method === 'GET') return json({ logged_in: true });
@@ -1191,10 +1200,9 @@ async function handleApi(req, env, url) {
   }
 
   // 账号执行模式切换：PUT /api/accounts/:id/execution
-  // 在 跟随默认 → browser → relay → server → 跟随默认 之间循环
-  // browser：扩展在用户浏览器中执行完整签到脚本（用户网络）
-  // relay：Worker 保留站点逻辑，HTTP 经扩展用用户本地网络执行（中继代理）
-  // server：Worker 直接请求（云端 IP）
+  // 在 跟随默认 → browser → server → 跟随默认 之间循环
+  // browser：扩展在用户浏览器中执行完整签到脚本 / 经扩展中继 HTTP（真浏览器环境）
+  // server：面板本机直接请求（CF 版是机房 IP，Docker 版是 NAS 的家庭 IP）
   const mExec = path.match(/^\/api\/accounts\/(\d+)\/execution$/);
   if (mExec && method === 'PUT') {
     const id = Number(mExec[1]);
@@ -1203,21 +1211,21 @@ async function handleApi(req, env, url) {
     let meta = {};
     try { meta = JSON.parse(acc.meta || '{}'); } catch { /* 忽略 */ }
     const cur = meta.execution || '';
-    // 「本地网络」只有浏览器扩展在线时才可用（扩展才是真正的本地网络中继）。
+    // 「本地网络 / 浏览器中继」只有浏览器扩展在线时才可用（扩展才是真正的浏览器环境）。
     const { isRelayAvailable } = await import('./lib/relay.js');
     const relayOk = await isRelayAvailable(env.DB);
     let next;
     const { target: want = '' } = await readBody(req);
     if (want === 'local') {
-      if (!relayOk) return json({ error: '浏览器扩展当前离线，现在不能切换到「本地网络」。请先安装并打开扩展（顶部会显示在线状态），再试。' }, 400);
+      if (!relayOk) return json({ error: '浏览器扩展当前离线，现在不能切换到「' + (env.RUNTIME === 'docker' ? '浏览器中继' : '本地网络') + '」。请先安装并打开扩展（顶部会显示在线状态），再试。' }, 400);
       next = 'browser';
     } else if (want === 'cf') {
       next = 'server';
     } else if (want === 'default') {
       next = '';
     } else {
-      // 无参时循环切换：''（跟随默认） → 本地网络 → CF 网络 → ''
-      // 扩展离线时跳过「本地网络」这一档，避免切到一个根本跑不了的模式里出不来
+      // 无参时循环切换：''（跟随默认） → 浏览器中继/本地网络 → 本机直连/CF 网络 → ''
+      // 扩展离线时跳过「浏览器中继」这一档，避免切到一个根本跑不了的模式里出不来
       next = cur === '' ? 'browser' : cur === 'browser' ? 'server' : '';
       if (next === 'browser' && !relayOk) next = 'server';
     }
@@ -1467,7 +1475,7 @@ async function handleApi(req, env, url) {
     // 否则「觉得密码泄露了、于是改密码」这件事根本不起作用 —— 偷到的那份会话还能用 7 天。
     await env.DB.prepare('DELETE FROM sessions').run().catch(() => {});
     const sid = await createSession(env);
-    return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(sid, SESSION_TTL_MS / 1000) });
+    return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(sid, SESSION_TTL_MS / 1000, req) });
   }
 
   // ---- 扩展连接状态（面板展示用）----
@@ -1679,6 +1687,21 @@ export default {
             }
           }
           if (changed) await setSetting(env.DB, 'sched_last_map', JSON.stringify(lastMap)).catch(() => {});
+
+          // ---- 后台凭据续期（独立于签到）----
+          // 每小时最多跑一轮：把「站点声明了 renew() 的账号」里快过期的凭据提前换新。
+          // 故意放在签到主循环之后、且不计入上面的 ranCount/日报 —— 这是保养，
+          // 不是签到；续期自己的成败写在账号 meta 里（renew_ok_at / renew_fail_*），
+          // 前端「凭据到期时间」悬浮提示会展示，失败且快过期时会推送提醒。
+          try {
+            const { renewCredentials } = await import('./lib/renew.js');
+            const renewRes = await renewCredentials(env, env.DB, await loadCustomSites(env).catch(() => []));
+            if (renewRes && renewRes.ran && renewRes.details && renewRes.details.length) {
+              console.log('[cron] 凭据续期：' + renewRes.details.join('；'));
+            }
+          } catch (e) {
+            console.error('[cron] 凭据续期失败', e);
+          }
 
           // 心跳：记下「这次自动检查是什么时候跑的、跑了几个」。
           // 没到点的大多数分钟（ranCount=0）不必写库，所以最多半小时写一次 ——

@@ -1,0 +1,44 @@
+# 每日签到面板（Docker 版）
+# 用法：cp .env.example .env → 填好 ENCRYPT_KEY → docker compose up -d
+
+services:
+  panel:
+    build: .
+    # CI 在每次 push 后自动构建并推送到 Docker Hub（见 .github/workflows/docker.yml），
+    # 所以这里既能本地构建，也能 docker compose pull 直接拉远端镜像。
+    image: nameguoguo/daily-checkin-panel:latest
+    container_name: daily-checkin-panel
+    # 主机网络模式：容器直接用主机的网络栈 ——
+    # ① NodeSeek 这类站点要求 IPv6，直连签到需要容器的 IPv6 出口，
+    #    而 Docker 默认 bridge 网络是纯 IPv4（配了 daemon IPv6 的除外）；
+    # ② 家用 NAS/软路由上最简单，不用再映射端口。
+    # 注意：Mac/Windows 的 Docker Desktop 不支持 host 模式（会被忽略），
+    # 请用 Linux 主机（NAS/软路由/小主机）。如需改回 bridge，注释掉下面这行，
+    # 并取消 ports 的注释（同时要在 Docker daemon 里开 IPv6，否则 NodeSeek 直连会失败）。
+    network_mode: "host"
+    # ports:
+    #   - "${PORT:-8787}:8787"
+    environment:
+      # 不填也行（面板会自动生成存库）；填了就用你的（openssl rand -base64 32）
+      ENCRYPT_KEY: ${ENCRYPT_KEY:-}
+      # host 网络模式下容器直接监听主机的这个端口
+      PORT: ${PORT:-8787}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      # 数据（SQLite + WAL）全在这个目录里，备份拷走就行
+      - ./data:/data
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    restart: unless-stopped
+
+  # 全自动更新（可选）：每 5 分钟检查 Docker Hub，有新镜像就拉取并重启 panel。
+  # watchtower 只会更新打了 enable 标签的容器，不会动你机器上别的容器。
+  # 启用：docker compose --profile auto-update up -d
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: daily-checkin-panel-watchtower
+    command: --interval 300 --cleanup --label-enable
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    profiles: [auto-update]
+    restart: unless-stopped

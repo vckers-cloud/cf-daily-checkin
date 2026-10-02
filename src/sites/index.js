@@ -13,8 +13,9 @@ import { kanxue } from './kanxue.js';
 import { wuaipojie } from './wuaipojie.js';
 import { v2board } from './v2board.js';
 import { hutue } from './hutue.js';
+import { telegram } from './telegram.js';
 
-export const SITES = [quark, cloud189, nodeseek, akile, v2ex, misign, kanxue, wuaipojie, v2board, hutue, httpTask];
+export const SITES = [quark, cloud189, nodeseek, akile, v2ex, misign, kanxue, wuaipojie, v2board, hutue, telegram, httpTask];
 
 // 内置站点 + 社区导入的站点（声明式配置，见 src/community.js）
 // custom 由调用方从 D1 读出后传进来（保持本文件无副作用，测试也好写）。
@@ -44,6 +45,7 @@ const LOGIN_HINTS = {
   wuaipojie: { kind: 'cookie', captcha: 'slider', url: 'https://www.52pojie.cn/member.php?mod=logging&action=login', note: '需先过一次网宿滑块安全验证，再登录' },
   v2board: { kind: 'password', captcha: 'maybe', url: '', note: '用机场域名打开登录页' },
   hutue: { kind: 'cookie', captcha: 'maybe', url: '', note: '登录后页面右侧会出现签到悬浮窗，用扩展抓 Cookie 即可' },
+  telegram: { kind: 'none', captcha: 'none', url: 'https://my.telegram.org', note: 'Docker 版专属：先去 my.telegram.org 建应用，再用 docker/telegram-login.mjs 登录拿 Session' },
   http: { kind: 'cookie', captcha: 'maybe', url: '', note: '' },
 };
 
@@ -60,6 +62,9 @@ export function siteMeta(custom = []) {
       toggles: s.toggles || [],
       execution: s.execution || 'server', // 默认执行模式
       domain: s.domain || '', // 浏览器执行时的目标域名
+      // 需要 Node.js 才能跑（如 Telegram 的 MTProto 要 TCP 长连接）：
+      // runner 在 Cloudflare Workers 上会直接给明确提示，不空转重试
+      requiresNode: !!s.requiresNode,
       // 站点自己的「一天」以哪个时区算（空 = 跟面板设置一致）。
       // 面板状态列的「已签到/未签到」用它判定，站点日界不同时才不会出现假签到。
       dayTz: s.dayTz || '',

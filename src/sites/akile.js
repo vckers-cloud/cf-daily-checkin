@@ -13,6 +13,7 @@ import { encryptJSON } from '../crypto.js';
 const UA = 'Mozilla/5.0 (Linux; Android 13; KB2000 Build/TKQ1.221114.001) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36';
 const API = 'https://api.akile.ai/api';
 const REFRESH_AHEAD_SEC = 12 * 3600; // 与网页一致：过期前 12 小时刷新
+const JWT_RE = /^[\w-]+\.[\w-]+\.[\w-]+$/;
 
 function okCode(code) {
   return code === 0 || code === 200 || code === '0' || code === '200';
@@ -52,16 +53,35 @@ async function apiGet(path, token) {
   return { httpStatus: res.status, body };
 }
 
-// 用旧 token 换新 token；失败返回 null
-async function refreshToken(token) {
+// 用旧 token 换新 token（结构化结果——调用方必须分清「被站点拒绝」和「网络没通」：
+// 前者再试也没用，后者换条路线/过会儿重试可能有用。原来一律返回 null，
+// 网络抖一下就会被当成「token 已死」，用户看到的就是莫名其妙的「请重新获取）。
+//   { token }            —— 换到了新 token
+//   { rejected, detail } —— 站点明确拒绝（401 / status_code 非成功码）：旧 token 已死
+//   { network, detail }  —— 请求没发出去或没回来（超时/断网/被拦）：值得重试
+async function tryRefresh(token) {
+  let res;
   try {
-    const { httpStatus, body } = await apiGet('/v1/user/refreshToken', token);
-    if (httpStatus === 401 || !okCode(body.status_code)) return null;
-    const nt = body && body.data && body.data.token;
-    return nt ? String(nt) : null;
-  } catch {
-    return null;
+    res = await apiGet('/v1/user/refreshToken', token);
+  } catch (e) {
+    return { network: true, detail: String((e && e.message) || e || '请求失败').slice(0, 160) };
   }
+  const { httpStatus, body } = res;
+  if (httpStatus === 401 || !okCode(body.status_code)) {
+    const msg = String((body && body.status_msg) || '').slice(0, 120);
+    return { rejected: true, detail: `HTTP ${httpStatus} · ${msg || '无返回文案'}` };
+  }
+  const nt = body && body.data && body.data.token;
+  if (!nt) {
+    return { rejected: true, detail: `HTTP ${httpStatus} · 接口成功了但没给新 token（返回里没有 data.token）` };
+  }
+  return { token: String(nt) };
+}
+
+// 签到主流程用（行为不变：失败一律 null，由 run() 按原来的文案报错）
+async function refreshToken(token) {
+  const r = await tryRefresh(token);
+  return r.token || null;
 }
 
 // 续期成功后回写 D1，下次直接用新 token（失败不影响本次签到）
@@ -96,7 +116,7 @@ export const akile = {
       placeholder: '浏览器登录 akile.ai 后，从 localStorage 复制 akile-token（一段 eyJ... 开头的 JWT）粘贴到这里',
     },
   ],
-  tips: '一句话记住：这个框要的是 akile-token，**不是 Cookie**。它们在两个完全不同的地方：Cookie 在 F12 → Application → Cookies，token 在 F12 → Application → Local Storage → akile-token（值以 eyJ 开头，是一段 JWT）。粘贴 Cookie 会被服务器拒绝，面板也只能回「登录已过期」，看着就像「我明明更新了」。最省事的取法：在浏览器登录 akile.ai → 点下方「复制取 token 小书签」→ 在 akile.ai 页面点该书签，token 会自动复制 → 回到面板粘贴保存。另外一个细节：Akile 的 token 大约只活一天（实测 exp 与签发时间相差 12～24 小时），到期后必须重新登录获取，面板会在即将过期时尝试自动续期。',
+  tips: '一句话记住：这个框要的是 akile-token，**不是 Cookie**。它们在两个完全不同的地方：Cookie 在 F12 → Application → Cookies，token 在 F12 → Application → Local Storage → akile-token（值以 eyJ 开头，是一段 JWT）。粘贴 Cookie 会被服务器拒绝，面板也只能回「登录已过期」，看着就像「我明明更新了」。最省事的取法：在浏览器登录 akile.ai → 点下方「复制取 token 小书签」→ 在 akile.ai 页面点该书签，token 会自动复制 → 回到面板粘贴保存。另外一个细节：Akile 的 token 大约只活一天（实测 exp 与签发时间相差 12～24 小时）。面板会在后台每小时检查一次，到期前 12 小时自动续期并回写，你一般不用管；万一续期失败（比如网络不通），面板会提前提醒你手动更新，而不是等 token 死了才报错。',
 
   async run(creds, ctx = {}) {
     let token = String(creds.token || '').trim();
@@ -108,7 +128,7 @@ export const akile = {
     // 「登录已过期，请重新从浏览器复制 akile-token」——因为他更新的是 **Cookie**，
     // 而 Akile 要的是 localStorage 里的 `akile-token`（一段 JWT），两者不是一个东西。
     // 所以先分辨值形态，把话说清楚，别拿一个 Cookie 去当 Authorization 白打一次请求。
-    const looksJwt = /^[\w-]+\.[\w-]+\.[\w-]+$/.test(token);
+    const looksJwt = JWT_RE.test(token);
     if (!looksJwt) {
       const looksCookie = token.includes('=') || token.includes(';');
       throw new Error(looksCookie
@@ -167,6 +187,29 @@ export const akile = {
     // 主文案用网站原话（status_msg），拿不到才用我们的套话
     if (msg.includes('已签到')) return { ok: true, message: msg || '今日已签到，无需重复' };
     throw new Error('签到失败：' + (msg || `status_code=${chk.body.status_code}`));
+  },
+
+  // 后台自动续期（独立于签到流程）：调度器每小时调用一次，提前把快过期的 token 换新。
+  // 约定（别的站点以后也可以照这个实现，调度器只认这个形状）：
+  //   { renewed: true, exp }                                  —— 已换新并回写 D1（exp 为新 token 的到期秒数）
+  //   { renewed: false, reason: 'not-due', exp }               —— 还没到续期时间，不用管
+  //   { renewed: false, reason: 'invalid', exp: 0 }            —— 存的值不是 JWT（等签到流程去跟用户说清楚）
+  //   { renewed: false, reason: 'network', exp, detail }       —— 网络没通：调度器会换路线再试/下小时再试
+  //   { renewed: false, reason: 'rejected', exp, detail }      —— 站点拒绝：旧 token 已死，只能手动重新获取
+  // 注意：这里用的 globalThis.fetch 由调用方按路线准备好（中继=用户本地网络 / 直连=机房网络）。
+  async renew(creds, ctx = {}) {
+    const token = String(creds.token || '').trim();
+    if (!JWT_RE.test(token)) return { renewed: false, reason: 'invalid', exp: 0 };
+    const exp = jwtExp(token);
+    if (!exp) return { renewed: false, reason: 'not-due', exp: 0 };
+    if (exp - Date.now() / 1000 > REFRESH_AHEAD_SEC) return { renewed: false, reason: 'not-due', exp };
+    const r = await tryRefresh(token);
+    if (r.token) {
+      await saveToken(ctx, r.token);
+      return { renewed: true, exp: jwtExp(r.token) || 0 };
+    }
+    if (r.rejected) return { renewed: false, reason: 'rejected', exp, detail: r.detail };
+    return { renewed: false, reason: 'network', exp, detail: r.detail };
   },
 
   // 浏览器端签到脚本：在用户浏览器中运行，使用用户本地网络（绕过 CF IP 限制）

@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
       - name: 自检（node tools/verify.mjs）
         run: node tools/verify.mjs
       - name: 试打一次发布包（确认打包脚本没坏）

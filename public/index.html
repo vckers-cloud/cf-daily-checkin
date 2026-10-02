@@ -427,7 +427,7 @@
              border-left:2px solid var(--line2); padding-left:8px; overflow-wrap:anywhere;
              display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
   td.msg.expanded .msg-raw { display:block; -webkit-line-clamp:unset; overflow:visible; }
-  /* 自动换路记录（「CF 直连失败…自动改走本地网络」）。
+  /* 自动换路记录（「直连失败…自动改走另一条路」）。
      只在真的换过路线时才出现一行：面板自动换路对用户是“看不见的行为”，
      不写出来只会让人看到一个莫名其妙的「失败」。和次要说明同一视觉层级，不抢眼。 */
   .msg-route { margin-top:5px; font-size:10.5px; line-height:1.5; color:var(--muted2); overflow-wrap:anywhere;
@@ -923,8 +923,8 @@
           <span class="sched-k">时区</span><div id="sched-tz"></div>
           <span class="hint-chip" data-tip="这里是全局签到时间：没单独设时间的账号都按它走。点胶囊选好时间 / 时区就自动保存（下面会弹一条提示告诉你存进去的是什么），没有「保存」按钮。想给某个账号错开时间：去上面表格的「全局签到」列点胶囊单设。">💡 说明</span>
           <!-- 版面右边剩下的地方放「面板出口连通性」：小圆点 + 站点名，点一下重新测。
-               测的是**面板所在的 Cloudflare** 能不能连上这些站点（也就是「CF 直连」这条路
-               通不通），不是你的本机网络 —— 气泡里会写清楚，免得看的人误会。 -->
+               测的是**面板本机**能不能连上这些站点（CF 版是 Cloudflare 出口 = 「CF 直连」这条路，
+               Docker 版是 NAS 出口 = 「本机直连」这条路）—— 气泡里会写清楚，免得看的人误会。 -->
           <div class="net-strip" id="net-strip" role="button" tabindex="0"
                title="点一下重新检测（从面板所在的 Cloudflare 出口探测，不是你的本机）">
             <span class="net-title">出口</span><span id="net-items" class="net-items"><span class="muted" style="font-size:11.5px">检测中…</span></span>
@@ -992,7 +992,7 @@
            常年占着账号页最底下一大块（还要读它的在线状态），不如集中到设置里。 -->
 
       <div class="foot">
-        <b>签到面板</b> · 跑在 Cloudflare Workers 上（免费额度就够）
+        <b>签到面板</b> · <span id="foot-runtime">跑在 Cloudflare Workers 上（免费额度就够）</span>
         <span class="dot">·</span>
         <a href="https://github.com/guoxpeng/daily-checkin-panel" target="_blank" rel="noreferrer">github.com/guoxpeng/daily-checkin-panel</a>
         <br>
@@ -1086,14 +1086,14 @@
       </div>
       <div class="card ext-card">
         <h2>🔌 浏览器扩展（签到面板助手）</h2>
-        <p class="muted">扩展干两件事：
+        <p class="muted" id="ext-desc">扩展干两件事：
           <b>① 一键取 Cookie</b>（连 HttpOnly 都能读，NodeSeek 这类站也行）；
           <b>② 当「本地网络中继」</b> —— 面板点「执行」时请求由扩展在您的浏览器里发出（用您的本机 IP 和登录态），
           所以能绕过 CF 网络的 IP 封禁与人机验证，吾爱破解这类屏蔽机房 IP 的站点也能签。
           扩展会自动挂长轮询接单，响应通常在 1 秒内。
           <b>用不着在弹窗里点任何「执行」</b>——面板点一下，它自己接单（旧版那个「立即执行待办签到」按钮已删掉）。
           扩展需要下面的 API Key 才能连接面板。</p>
-        <p class="muted">中继状态：<span id="relay-status" class="badge off">检测中…</span> <span class="muted" style="font-size:12px">扩展在线时，标记为「🌐 本地网络」的账号会经您的本机网络执行</span></p>
+        <p class="muted">中继状态：<span id="relay-status" class="badge off">检测中…</span> <span class="muted" style="font-size:12px" id="relay-desc">扩展在线时，标记为「🌐 本地网络」的账号会经您的本机网络执行</span></p>
         <div class="row" style="margin:12px 0 4px">
           <a href="/checkin-helper.zip" class="bookmarklet" download>⬇️ 下载 签到面板助手</a>
         </div>
@@ -1358,21 +1358,50 @@ function show(view) {
 
 async function boot() {
   const s = await api('/api/status');
+  IS_DOCKER = s.runtime === 'docker';
+  if (IS_DOCKER) {
+    $('foot-runtime').textContent = '跑在 Docker 上';
+    // Docker 版界面适配：扩展状态、出口检测、扩展说明里的"Cloudflare/机房"说法全部换掉
+    const es = $('ext-state');
+    if (es) es.title = '点击检测一次扩展是否在线；扩展在线时，「浏览器中继」和一键取 Cookie 才可用';
+    const ns = $('net-strip');
+    if (ns) ns.title = '点一下重新检测（从本机 NAS 出口探测，测的是你的家庭网络能不能连上这些站点）';
+    const ed = $('ext-desc');
+    if (ed) ed.innerHTML = '扩展干两件事：'
+      + '<b>① 一键取 Cookie</b>（连 HttpOnly 都能读，NodeSeek 这类站也行）；'
+      + '<b>② 当「浏览器中继」</b> —— 面板点「执行」时请求由扩展在<b>真实浏览器标签页</b>里发出（真浏览器指纹 + 你的登录态），'
+      + '所以能过人机验证。注意：Docker 版面板本来就在你家宽带上，"借 IP"已经不需要了，中继的价值就是"真浏览器"。'
+      + '扩展会自动挂长轮询接单，响应通常在 1 秒内。'
+      + '<b>用不着在弹窗里点任何「执行」</b>——面板点一下，它自己接单。'
+      + '扩展需要下面的 API Key 才能连接面板。';
+    const rd = $('relay-desc');
+    if (rd) rd.textContent = '扩展在线时，标记为「🌐 浏览器中继」的账号会经真实浏览器标签页执行';
+  }
   if (s.setup_needed) show('view-setup');
   else if (!s.logged_in) show('view-login');
   else { show('view-main'); await initMain(); }
+}
+
+// 登录/初始化接口返回 200 不等于浏览器真的存下了 Cookie
+// （比如经 http 访问时服务端误发 Secure Cookie，浏览器会直接拒收）。
+// 进主界面前先确认一次，存不上就明说，不让页面卡在"加载中..."。
+async function ensureSession() {
+  const s = await api('/api/status');
+  if (s.logged_in) return true;
+  toast('登录没生效：浏览器没存下登录 Cookie。请确认直接用 http(s) 打开面板（不要嵌在别的页面里），或换个浏览器试试');
+  return false;
 }
 
 $('btn-setup').onclick = async () => {
   const a = $('setup-pwd').value, b = $('setup-pwd2').value;
   if (a.length < 8) return toast('密码至少 8 位');
   if (a !== b) return toast('两次输入不一致');
-  try { await api('/api/setup', 'POST', { password: a }); show('view-main'); await initMain(); }
+  try { await api('/api/setup', 'POST', { password: a }); if (await ensureSession()) { show('view-main'); await initMain(); } }
   catch (e) { toast(e.message); }
 };
 
 $('btn-login').onclick = async () => {
-  try { await api('/api/login', 'POST', { password: $('login-pwd').value }); show('view-main'); await initMain(); }
+  try { await api('/api/login', 'POST', { password: $('login-pwd').value }); if (await ensureSession()) { show('view-main'); await initMain(); } }
   catch (e) { toast(e.message); }
 };
 $('login-pwd').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btn-login').click(); });
@@ -1748,17 +1777,19 @@ function paintSchedLine(s, displayTime) {
 
 // ---------- 面板出口连通性（全局签到卡右边那排小圆点）----------
 //
-// 【口径要在面板上写清楚】测的是**面板自己**（Cloudflare 那台机器）能不能连上这些站点，
-// 也就是「CF 直连」这条路线通不通 —— 签到因「机房 IP 被拦 / 连不上」失败时，这里是第一手线索。
-// 它**不是**在测你的本机网络：你打不开谷歌、不代表面板连不上；面板连得上 Telegram、
-// 也不代表你手机连得上。所以气泡里的第一行就把这句话写明白。
+// 【口径要在面板上写清楚】测的是**面板自己**能不能连上这些站点，
+// 也就是直连这条路线通不通（CF 版是 Cloudflare 那台机器，Docker 版是本机 NAS）——
+// 签到因「出口被拦 / 连不上」失败时，这里是第一手线索。
+// 它**不是**在测你的手机/电脑网络：你打不开谷歌、不代表面板连不上；
+// CF 版面板连得上 Telegram，也不代表你手机连得上。所以气泡里的第一行就把这句话写明白。
 function netItemHTML(t) {
   const ok = !!t.ok;
   const detail = ok
     ? `${t.name}：通（HTTP ${t.status || '-'} · ${t.ms}ms）`
     : `${t.name}：不通 —— ${t.error || '未知原因'}（等了 ${Math.round((t.ms || 0) / 1000)} 秒）`;
+  const where = IS_DOCKER ? '（测的是本机 NAS 出口）' : '（测的是面板所在的 Cloudflare，不是你的本机）';
   return `<span class="net-item ${ok ? 'ok' : 'bad'}" data-tip="面板出口 → ${esc(detail)}
-（测的是面板所在的 Cloudflare，不是你的本机）">`
+${where}">`
     + `<i></i>${esc(t.name)}</span>`;
 }
 function renderNetStrip(data) {
@@ -2677,7 +2708,12 @@ function siteName(id) {
 
 let ACCTS = [];
 
-// 站点级推荐说明：只在当前实际走的是 CF 网络时显示（本地网络不用提醒）。
+// 面板运行环境：'docker' = NAS 本机（家庭网络），其余 = Cloudflare Workers。
+// Docker 下没有"机房 IP"这条路线：直连就是家庭宽带，"本地网络"的真实含义是"走真实浏览器"
+// （扩展在浏览器标签页里发请求，真浏览器指纹 + 登录态）。路线名、提示文案都要跟着换，
+// 不然界面会撒谎（NodeSeek 人机验证事故的教训：徽章写着"本地网络"，实际走的是 NAS 直连）。
+
+// 站点级推荐说明：只在当前实际走的不是本地路线时显示（本地路线不用提醒）。
 // 面板的自动模式已经会「走不通就换另一条路线」，所以这里的措辞只能是提醒，
 // 不能再写「必须切本地网络」——那是可以自动完成的。
 const SITE_MODE_HINT = {
@@ -2695,6 +2731,17 @@ const SITE_MODE_HINT = {
   v2ex: 'V2EX 在 CF 网络常被拦：直连失败会自动改走「本地网络」，不用手动切',
 };
 
+// Docker 版站点提示：没有"机房 IP"，直连就是家庭宽带；
+// 有人机验证的站，扩展在线时会优先走「浏览器中继」（真浏览器标签页发请求）。
+const SITE_MODE_HINT_DOCKER = {
+  wuaipojie: '吾爱破解主站被网宿 WAF 保护：脚本化请求（含浏览器中继）整站读不到，已自动改用「浏览器导航签到」——点下面的「🌐 浏览器签到」立即执行，或直接点「执行」（也会自动走这条路）',
+  nodeseek: 'NodeSeek 有 Cloudflare 人机验证，本机直连（程序指纹）可能被拦：扩展在线时会自动优先走「浏览器中继」（真浏览器标签页发请求），不用手动切',
+  hutue: '糊涂鳄分两个独立站：dj.hutue.cn 本机直连正常；hutue.cn 曾被站点 WAF 整站拦过，本机直连失败会自动换「浏览器中继」（浏览器后台开页面代发请求，不抢焦点、用完自动关）。保持「自动」即可',
+  kanxue: '看雪常有人机验证：扩展在线时会优先走「浏览器中继」，不用手动切',
+  misign: 'Discuz 论坛多数会拦机房 IP：Docker 跑在你家宽带上，直连通常没问题；扩展在线时也会优先走「浏览器中继」',
+  v2ex: 'V2EX 有时拦程序化请求：扩展在线时会优先走「浏览器中继」，不用手动切',
+};
+
 // 执行模式单元格（徽章 + 切换按钮 + 站点推荐 + 站点开关胶囊）。
 // 单独抽出来是为了「切换模式」时可以只更新这一格，不用整表重绘。
 // ---------- 凭据到期时间（鼠标悬浮站点名时弹出来的那段话） ----------
@@ -2704,7 +2751,7 @@ const SITE_MODE_HINT = {
 // 两种都报出来，用户就不用猜「我这份 Cookie 还能撑几天」。
 // 其它站点（Discuz、机场面板…）的会话有效期只在服务器那边知道 —— 这里**如实说「凭据里没写」**，
 // 不编一个时间出来：他看这句话是为了决定「要不要现在去重新登录」，猜错比不说更坏。
-function credExpTip(exp) {
+function credExpTip(exp, metaStr) {
   const fmt = (ms) => new Date(ms).toLocaleString('zh-CN',
     { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   const left = (ms) => {
@@ -2729,18 +2776,33 @@ function credExpTip(exp) {
     lines.push('这份 Cookie / 凭据里没有写到期时间 —— 只有网站自己知道它还算不算登录。');
     lines.push('真失效了面板会报「需要重新登录」，也能用「Cookie 解析器」当场体检。');
   }
+  // ---- 自动续期状态（后台每小时检查，到期前自动换新；Akile 这类短命 token 就靠它续命）----
+  let rm = {};
+  try { rm = JSON.parse(metaStr || '{}'); } catch { /* 忽略 */ }
+  if (rm.renew_ok_at) {
+    lines.push('自动续期：上次成功 ' + fmt(rm.renew_ok_at) + '（面板自己换的新凭据，你不用管）');
+  }
+  if (rm.renew_fail_at && (!rm.renew_ok_at || rm.renew_fail_at > rm.renew_ok_at)) {
+    const reasonMap = { network: '网络没通', rejected: '站点拒绝（旧凭据已失效）', invalid: '凭据格式不对', error: '续期过程出错' };
+    lines.push('自动续期失败（' + fmt(rm.renew_fail_at) + '）：' + (reasonMap[rm.renew_fail_reason] || rm.renew_fail_reason || '未知原因'));
+    if (rm.renew_fail_detail) lines.push('失败详情：' + rm.renew_fail_detail);
+    lines.push('面板会每小时重试一次；如果一直失败，请手动重新获取凭据。');
+  }
   return lines.join('\n');
 }
 
 function execCellHTML(a, execOverride) {
   const site = SITES.find((s) => s.id === a.site);
   const siteExec = site ? (site.execution || 'server') : 'server';
-  // 浏览器模式已并入本地中继：对外统一显示为「本地网络」，避免两个名字其实是同一件事
+  // 路线对外名：CF 版「本地网络 / CF 网络」；Docker 版没有机房，「浏览器中继 / 本机直连」才诚实。
+  // 浏览器模式已并入中继：对外统一显示为一个名字，避免两个名字其实是同一件事
+  const LOCAL_NAME = IS_DOCKER ? '浏览器中继' : '本地网络';
+  const SERVER_NAME = IS_DOCKER ? '本机直连' : 'CF 网络';
   const siteLocalExec = siteExec === 'browser' || siteExec === 'relay';
-  const siteExecName = siteLocalExec ? '本地网络' : 'CF 网络';
+  const siteExecName = siteLocalExec ? LOCAL_NAME : SERVER_NAME;
   // 这一格要显示的是「实际会走哪条路线」，不是站点默认 ——
   // 自动模式会优先走「上次真正走通的那条」（runner 记在 meta.exec_route），失败还会自己换另一条，
-  // 只显示站点默认会骗人：用户看到「CF 网络」，实际却可能正在借他的本机网络。
+  // 只显示站点默认会骗人：用户看到的是直连的徽章，实际却可能正在走中继。
   let remembered = '';
   try { remembered = JSON.parse(a.meta || '{}').exec_route || ''; } catch { /* 忽略 */ }
   const auto = !execOverride;
@@ -2748,18 +2810,25 @@ function execCellHTML(a, execOverride) {
     ? (execOverride === 'browser' || execOverride === 'relay' ? 'relay' : 'server')
     : (remembered === 'relay' || remembered === 'server' ? remembered : (siteLocalExec ? 'relay' : 'server'));
   const isLocalExec = effRoute === 'relay';
-  const execName = isLocalExec ? '本地网络' : 'CF 网络';
+  const execName = isLocalExec ? LOCAL_NAME : SERVER_NAME;
   const prefix = auto ? '自动 · ' : '';
+  const localTip = IS_DOCKER
+    ? '经扩展在真实浏览器标签页里发请求：真浏览器指纹 + 你的登录态，能过人机验证。需要浏览器扩展在线。'
+    : '借你的本机网络发请求（逻辑仍在 Worker）：可绕过机房 IP 封禁与人机验证。需要浏览器扩展在线。';
+  const serverTip = IS_DOCKER
+    ? 'NAS 本机直接请求：家庭 IP，但请求指纹是程序不是浏览器，有人机验证的站点可能被拦。'
+    : '由 Cloudflare 机房 IP 直接请求：适合普通 API 类站点。部分站点会屏蔽机房 IP。';
   const execBadge = isLocalExec
-    ? `<span class="badge local" title="借你的本机网络发请求（逻辑仍在 Worker）：可绕过机房 IP 封禁与人机验证。需要浏览器扩展在线。">🌐 ${prefix}本地网络</span>`
-    : `<span class="badge cf" title="由 Cloudflare 机房 IP 直接请求：适合普通 API 类站点。部分站点会屏蔽机房 IP。">☁️ ${prefix}CF 网络</span>`;
+    ? `<span class="badge local" title="${localTip}">🌐 ${prefix}${LOCAL_NAME}</span>`
+    : `<span class="badge cf" title="${serverTip}">☁️ ${prefix}${SERVER_NAME}</span>`;
   const execTitle = !auto
     ? `（已手动设为${execName}，点击切换）`
     : remembered
       ? `（自动选路：上次实际走通的是「${execName}」，会优先用它；走不通时自动换另一条，换过会写在「网站反馈」里。点击可手动固定）`
       : `（自动选路：先按站点默认（${siteExecName}）试，走不通自动换另一条。点击可手动固定）`;
-  // 站点级推荐（如吾爱破解只能走本地网络），只在当前不是本地网络时提醒，避免添乱
-  const hint = !isLocalExec && SITE_MODE_HINT[a.site] ? SITE_MODE_HINT[a.site] : '';
+  // 站点级推荐（如吾爱破解只能走中继），只在当前不是本地路线时提醒，避免添乱
+  const hintSrc = IS_DOCKER ? SITE_MODE_HINT_DOCKER : SITE_MODE_HINT;
+  const hint = !isLocalExec && hintSrc[a.site] ? hintSrc[a.site] : '';
   const pills = togglePills(a);
   // 社区导入的站点：名字旁挂一个绿标，鼠标移上去看出处（作者 / 版本 / 来源）
   const com = site && site.community;
@@ -2776,7 +2845,7 @@ function execCellHTML(a, execOverride) {
   return {
     isLocalExec,
     siteHint: hint,
-    html: `<div class="site-wrap"><div class="site-head"><b class="site-name" data-tip="${esc(credExpTip(a.cred_exp))}">${esc(a.name)}</b>${comBadge}`
+    html: `<div class="site-wrap"><div class="site-head"><b class="site-name" data-tip="${esc(credExpTip(a.cred_exp, a.meta))}">${esc(a.name)}</b>${comBadge}`
       + `<button class="ghost sm exec-switch" data-exec="${a.id}" title="${esc(execTitle)}">切换</button>`
       + `</div><div class="site-line">${execBadge}</div>${bsign}${pills}</div>`,
   };
@@ -2835,15 +2904,20 @@ function siteOwnMessage(raw) {
 function feedbackHint(msg, siteId, isLocalExec) {
   const m = String(msg || '');
   if (!m) return '';
-  // 面板会自动改走本地网络，所以这条提示只在「两条路线都没成」时才会出现，
-  // 不能再写「请手动切本地网络」——那是自动完成的。
+  // 面板会自动改走另一条路线，所以这条提示只在「两条路线都没成」时才会出现，
+  // 不能再写「请手动切」——那是自动完成的。
   if (/UrlACL|Client IP|网宿|waf0(?!\d)/i.test(m) || /403 Forbidden/.test(m)) {
+    const localName = IS_DOCKER ? '浏览器中继' : '本地网络';
     return isLocalExec
-      ? '建议：已经是「本地网络」还是被拦，请先在浏览器打开该网站完成滑块/安全验证，再用扩展重新复制一次 Cookie（Cookie 里的验证凭证过期了）'
-      : '建议：该网站拦了机房 IP。面板会自动改走「本地网络」，这条提示说明两条路线都没签上 —— 先确认浏览器扩展在线（设置页可自检），或在浏览器打开该网站过一次安全验证后重新复制 Cookie';
+      ? `建议：已经是「${localName}」还是被拦，请先在浏览器打开该网站完成滑块/安全验证，再用扩展重新复制一次 Cookie（Cookie 里的验证凭证过期了）`
+      : IS_DOCKER
+        ? '建议：该网站拦了本机直连。面板会自动改走「浏览器中继」，这条提示说明两条路线都没签上 —— 先确认浏览器扩展在线（设置页可自检），或在浏览器打开该网站过一次安全验证后重新复制 Cookie'
+        : '建议：该网站拦了机房 IP。面板会自动改走「本地网络」，这条提示说明两条路线都没签上 —— 先确认浏览器扩展在线（设置页可自检），或在浏览器打开该网站过一次安全验证后重新复制 Cookie';
   }
   if (/人机验证|验证码|captcha|turnstile|请先完成验证/i.test(m)) {
-    return '建议：该网站需要人工验证，请在浏览器里登录/过一次验证，再点扩展图标重新获取 Cookie';
+    return IS_DOCKER
+      ? '建议：该网站要验证"是不是真人"，本机直连（程序指纹）过不去 —— 点这个账号的「切换」改成「浏览器中继」，让扩展在真实浏览器标签页里代签（先在浏览器里登录好该网站）'
+      : '建议：该网站需要人工验证，请在浏览器里登录/过一次验证，再点扩展图标重新获取 Cookie';
   }
   // 「结果未知」要在「已签到」那条之前判：它的文案里会提到「若已签到网站会直接回今日已签到」，
   // 否则会被下面那条当成「已经签过了」而什么都不提示。
@@ -2861,7 +2935,8 @@ function feedbackHint(msg, siteId, isLocalExec) {
   if (/没有生效|打卡签到|未签到/.test(m)) {
     return siteId === 'wuaipojie'
       ? '说明：网站顶部那个按钮仍是「打卡签到」，今天确实还没签上。'
-        + '吾爱破解的签到接口受网宿 WAF 保护，用「本地网络」（中继）时常把连接吊死；'
+        + (IS_DOCKER ? '吾爱破解的签到接口受网宿 WAF 保护，用「浏览器中继」时常把连接吊死；'
+          : '吾爱破解的签到接口受网宿 WAF 保护，用「本地网络」（中继）时常把连接吊死；')
         + '请在浏览器打开 www.52pojie.cn 手动点一次那个按钮（可能要先过滑块），然后再回面板执行一次就会读到「签到完毕」'
       : '说明：网站按钮显示还没签到。请在浏览器里手动点一次签到按钮，再回面板执行一次';
   }
@@ -2877,7 +2952,9 @@ function feedbackHint(msg, siteId, isLocalExec) {
   if (/扩展(离线|不在线)|中继不可用|relay unavailable/i.test(m)) {
     return '建议：打开浏览器、确认扩展已安装并处于在线状态；中继任务由扩展接单执行';
   }
-  if (/ipv6/i.test(m) && !isLocalExec) return '建议：CF 网络没有 IPv6 出口，面板会自动改走「本地网络」；若两条路线都不通，请确认浏览器扩展在线';
+  if (/ipv6/i.test(m) && !isLocalExec) return IS_DOCKER
+    ? '建议：本机没有 IPv6 出口，面板会自动改走「浏览器中继」；若两条路线都不通，请确认浏览器扩展在线'
+    : '建议：CF 网络没有 IPv6 出口，面板会自动改走「本地网络」；若两条路线都不通，请确认浏览器扩展在线';
   return '';
 }
 
@@ -2960,12 +3037,12 @@ async function loadAccounts() {
     const rawClean = rawFeedbackLine(a.last_detail, msgShow);
     const rawShow = rawClean && rawClean !== msgShow ? rawClean.slice(0, 220) : '';
     const rawTip = !rawShow && rawText ? ` data-tip="网站原始返回：${esc(rawText.slice(0, 600))}"` : '';
-    // 换路记录只在「真的换过一条路线」时展示（没有换路时它只是一句「路线：CF 直连」，
+    // 换路记录只在「真的换过一条路线」时展示（没有换路时它只是一句「路线：直连」，
     // 那是站点徽章已经在说的事，不必再占一行）。
     const routeShow = /自动改走|都没成功/.test(routeNote) ? routeNote : '';
     // 提示要拿「反馈 + 网站原文」一起判：
     // 比如吾爱的 message 只有「HTTP 403」，真正能认出是网宿 UrlACL 的关键词在原文里。
-    // 站点级推荐（如糊涂鳄建议切本地网络）也统一放到网站反馈后面
+    // 站点级推荐（如糊涂鳄建议切中继）也统一放到网站反馈后面
     let hintText = feedbackHint((bySite ? msg + '\n' : '') + msgShow + '\n' + rawText, a.site, isLocalExec);
     if (siteHint) hintText = (hintText ? hintText + '\n' : '') + '推荐：' + siteHint;
     // 建议正文**不在表格里显示**，只留一枚「💡 建议」胶囊，鼠标移上去弹完整内容
@@ -3104,7 +3181,12 @@ function bindRowActions(tb, accounts) {
     b.disabled = true; b.textContent = '…';
     try {
       const r = await api('/api/accounts/' + id + '/execution', 'PUT', {});
-      const msgs = {
+      const msgs = IS_DOCKER ? {
+        browser: '已切换为浏览器中继（扩展在真实浏览器标签页里发请求）',
+        relay: '已切换为浏览器中继（扩展在真实浏览器标签页里发请求）',
+        server: '已切换为本机直连（NAS 直接请求）',
+        default: '已恢复跟随站点默认',
+      } : {
         browser: '已切换为本地网络（借用您的本机网络发请求）',
         relay: '已切换为本地网络（借用您的本机网络发请求）',
         server: '已切换为 CF 网络执行（Cloudflare 机房 IP 直接请求）',
@@ -3112,7 +3194,7 @@ function bindRowActions(tb, accounts) {
       };
       let tip = msgs[r.execution] || '已切换';
       if (r.relay_online === false && r.execution !== 'browser' && r.execution !== 'relay') {
-        tip += '（扩展当前离线，暂时不能切「本地网络」）';
+        tip += IS_DOCKER ? '（扩展当前离线，暂时不能切「浏览器中继」）' : '（扩展当前离线，暂时不能切「本地网络」）';
       }
       toast(tip);
       if (r.relay_online != null) RELAY_ONLINE = !!r.relay_online;
@@ -4061,8 +4143,8 @@ $('btn-tg-clear').onclick = async () => {
 };
 
 // ---------- 扩展 API Key ----------
-// 扩展（本地网络中继）在线状态：首页右上角与设置页显示同一个值。
-// 只有在线时，账号才能切到「本地网络」——否则请求没人接单，点了也只是白等。
+// 扩展（本地网络中继 / 浏览器中继）在线状态：首页右上角与设置页显示同一个值。
+// 只有在线时，账号才能切到中继路线——否则请求没人接单，点了也只是白等。
 let RELAY_ONLINE = false;
 let RELAY_VERSION = '';
 let RELAY_LATEST = '';
@@ -4091,19 +4173,22 @@ async function refreshExtState() {
   }
   if (home) {
     home.className = RELAY_ONLINE ? 'on' : 'off';
-    $('ext-state-text').textContent = RELAY_ONLINE ? '扩展在线（自动中继已启用）' : '扩展离线（本地网络不可用）';
+    $('ext-state-text').textContent = RELAY_ONLINE
+      ? '扩展在线（自动中继已启用）'
+      : IS_DOCKER ? '扩展离线（浏览器中继不可用）' : '扩展离线（本地网络不可用）';
   }
   const el = $('relay-status');
   if (el) {
     // 队列堆积时不要只说「在线」：那会让人以为一切正常，而实际上每个请求都在排队超时。
     const busy = RELAY_ONLINE && RELAY_BACKLOG >= 3;
     el.className = RELAY_ONLINE ? (busy ? 'badge skip' : 'badge ok') : 'badge off';
+    const offlineTip = IS_DOCKER ? '⚪ 扩展离线（走本机直连）' : '⚪ 扩展离线（走 CF 网络）';
     el.textContent = RELAY_ONLINE
       ? (busy
         ? `🟠 扩展在线 · 中继排队中（${RELAY_BACKLOG} 个请求待执行）`
         : `🟢 扩展在线（自动中继已启用）${RELAY_VERSION ? ' · v' + RELAY_VERSION : ''}`
           + (RELAY_LATEST && RELAY_VERSION && cmpVer(RELAY_LATEST, RELAY_VERSION) > 0 ? `（有新版 v${RELAY_LATEST}，去扩展弹窗点更新）` : ''))
-      : '⚪ 扩展离线（走 CF 网络）';
+      : offlineTip;
   }
   return RELAY_ONLINE;
 }
@@ -4111,7 +4196,9 @@ async function refreshExtState() {
 // 点一下首页那个状态胶囊就手动检测一次
 $('ext-state').onclick = async () => {
   const ok = await refreshExtState();
-  toast(ok ? '扩展在线：可以切换到「本地网络」' : '扩展离线：请安装并打开浏览器扩展，或去设置页看下载步骤');
+  toast(ok
+    ? (IS_DOCKER ? '扩展在线：可以切换到「浏览器中继」' : '扩展在线：可以切换到「本地网络」')
+    : '扩展离线：请安装并打开浏览器扩展，或去设置页看下载步骤');
 };
 // 每 30 秒自动检测一次（扩展断线时天也不会显示错）
 setInterval(() => { if (!$('view-main').classList.contains('hidden')) refreshExtState(); }, 30000);

@@ -447,13 +447,15 @@ t('鼠标悬浮站点名 → 弹出凭据到期时间', () => {
   // 用户最容易卡在「我明明更新了 Cookie，怎么还说失效」——而很多站点把到期时间就写在凭据里
   // （WordPress 会话写在 cookie 值里， Akile 的 akile-token 是 JWT）。
   // 悬浮站点名直接告诉他「这份还能撑到什么时候」，比等签到失败再查快得多。
-  assert.match(html, /<b class="site-name" data-tip="\$\{esc\(credExpTip\(a\.cred_exp\)\)\}">\$\{esc\(a\.name\)\}<\/b>/,
-    '站点名要挂气泡');
-  assert.match(html, /function credExpTip\(exp\)/, '要有 credExpTip');
+  assert.match(html, /<b class="site-name" data-tip="\$\{esc\(credExpTip\(a\.cred_exp, a\.meta\)\)\}">\$\{esc\(a\.name\)\}<\/b>/,
+    '站点名要挂气泡（带账号 meta，好展示自动续期状态）');
+  assert.match(html, /function credExpTip\(exp, metaStr\)/, '要有 credExpTip');
   assert.match(html, /const s = \(exp && exp\.sessions\) \|\| \[\];/, '要读服务端解出的 sessions');
   assert.match(html, /const t = \(exp && exp\.tokens\) \|\| \[\];/, '也要读 tokens（如 akile-token）');
   assert.match(html, /const lines = \[s\.length \? 'Cookie 有效期' : '凭据到期时间'\];/, '有 Cookie 会话就叫「Cookie 有效期」，只有 token 时才叫「凭据到期时间」');
   assert.match(html, /这份 Cookie \/ 凭据里没有写到期时间/, '凭据里确实没写时要如实说（不能猜一个时间出来）');
+  assert.match(html, /自动续期：上次成功/, '自动续期成功要在悬浮提示里写出来');
+  assert.match(html, /自动续期失败/, '自动续期失败要在悬浮提示里写出来（带原因和重试说明）');
   // 不依赖后端：这一格是 a.cred_exp（服务端只回结论、不回凭据）；
   // 拖不动的时候连提示都没了，所以要有一条点线底线作暗示
   assert.match(html, /\.site-head b\.site-name \{ cursor:help; border-bottom:1px dotted/, '点线底线是可悬浮的唯一暗示');

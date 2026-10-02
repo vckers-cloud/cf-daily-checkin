@@ -44,11 +44,43 @@ function withAccountLock(fn) {
 export function accountLockIdle() {
   return ACCOUNT_LOCK;
 }
+// 凭据续期（src/lib/renew.js）与签到共用同一把账号锁：同一账号的签到和续期
+// 不能同时跑（都会读写它的凭据）。
+export { withAccountLock };
 // 仅供测试：Set-Cookie 静默回写（生产代码走 runAccount 内部调用）
 export { applyCookieRefresh };
 
 // 执行路线的对外名字（面板「网站反馈」里会带上，排障时一眼能看出这次请求从哪个网络出去）
+// Cloudflare 版叫「CF 直连 / 本地网络」；Docker 版没有 Cloudflare 机房，
+// 叫「本机直连 / 浏览器中继」才诚实（NAS 本来就在本地网络，"本地网络"的真实含义是"走真实浏览器"）。
 export const ROUTE_NAME = { server: 'CF 直连', relay: '本地网络' };
+export function routeName(env, route) {
+  if (env && env.RUNTIME === 'docker') {
+    return route === 'relay' ? '浏览器中继' : route === 'server' ? '本机直连' : (ROUTE_NAME[route] || route);
+  }
+  return ROUTE_NAME[route] || route;
+}
+
+// 是否跑在 Node.js 上（Docker 版 / 本地 node）。
+// Cloudflare Workers 里没有 process.versions.node（且 navigator.userAgent 带 Cloudflare-Workers），
+// 需要 TCP 长连接的站点（如 Telegram 的 MTProto）只能在这里返回 true 的环境跑。
+export function isNodeRuntime() {
+  try {
+    if (typeof navigator !== 'undefined' && /cloudflare-workers/i.test(navigator.userAgent || '')) return false;
+    return typeof process !== 'undefined' && !!(process.versions && process.versions.node);
+  } catch {
+    return false;
+  }
+}
+
+// 纯函数：要不要因为「需要 Node.js」拦截这个站点。onNode 由调用方传 isNodeRuntime()，
+// 抽出来是为了单测能确定性地覆盖 Workers/Node 两种分支。
+export function needNodeSkip(site, onNode) {
+  if (site && site.requiresNode && !onNode) {
+    return `${site.name}：需要 Docker 版才能跑（要 TCP 长连接，Cloudflare Workers 没有）。请用 docker compose 部署后再启用此账号，步骤见 docker/README.md「Telegram 签到」。`;
+  }
+  return null;
+}
 
 // 把一条路线的失败压成几个字，给面板上那一行用。
 //
@@ -199,6 +231,23 @@ export async function runAccount(env, account) {
   try {
     const site = getSite(account.site, customSites);
     if (!site) throw new Error('未知站点：' + account.site);
+    // 需要 Node.js 的站点（如 Telegram 签到用的 MTProto 要 TCP 长连接）：
+    // Cloudflare Workers 没有 TCP，进路线解析没有意义 —— 直接记一条说清楚的失败，
+    // 不重试（retryable: false），免得每 15 分钟空转一次还写一堆看不懂的日志。
+    const needNodeMsg = needNodeSkip(site, isNodeRuntime());
+    if (needNodeMsg) {
+      const now = Date.now();
+      const duration = now - t0;
+      await db
+        .prepare('INSERT INTO runs(account_id, site, name, status, message, detail, duration_ms, created_at) VALUES(?,?,?,?,?,?,?,?)')
+        .bind(account.id, account.site, account.name, 'fail', needNodeMsg, '', duration, now)
+        .run();
+      await db
+        .prepare('UPDATE accounts SET last_status=?, last_msg=?, last_run_at=?, meta=?, updated_at=? WHERE id=?')
+        .bind('fail', needNodeMsg, now, JSON.stringify(meta), now, account.id)
+        .run();
+      return { status: 'fail', message: needNodeMsg, duration_ms: duration, retryable: false };
+    }
     // 先把凭据解出来：路线默认值可能是**按站点地址**决定的（见下面的 executionFor），
     // 同一个站点模块可能管着多个域名，默认路线不一定相同。
     const creds = await decryptJSON(env, db, account.creds);
@@ -266,7 +315,7 @@ export async function runAccount(env, account) {
     // （真正会触发兜底的是另一件事：固定的那条**跑过了**且因网络层原因没成，见下面的换路逻辑。）
     const pinnedSkipped = pinnedForPlan ? routeState.find((s) => s.route === pinnedForPlan && s.skip) : null;
     if (pinnedSkipped) {
-      skipReason = `已固定走「${ROUTE_NAME[pinnedForPlan]}」，但现在用不了：${pinnedSkipped.skip}`;
+      skipReason = `已固定走「${routeName(env, pinnedForPlan)}」，但现在用不了：${pinnedSkipped.skip}`;
     } else if (!runnable.length) {
       skipReason = routeState.map((s) => s.skip).filter(Boolean).join(' ') || '没有可用的执行路线';
     }
@@ -365,7 +414,7 @@ export async function runAccount(env, account) {
           const unknown = (e && e.outcome) === 'relay-unknown';
           if (alt && isRouteFailure(e) && !unknown) {
             // 这条网络出口不行，换另一条。记下来写进「网站反馈」，让用户能看出面板做了什么。
-            switchNotes.push(`${ROUTE_NAME[st.route]}失败（${shortReason(e)}）`);
+            switchNotes.push(`${routeName(env, st.route)}失败（${shortReason(e)}）`);
             continue;
           }
           throw e;
@@ -394,9 +443,9 @@ export async function runAccount(env, account) {
     // 否则用户看到「明明固定了 CF 网络，怎么走成本地网络了」会以为是面板乱来。
     const pinnedFallback = pinnedForPlan && usedRoute && usedRoute !== pinnedForPlan;
     meta.route_note = !switchNotes.length
-      ? `路线：${ROUTE_NAME[usedRoute] || '未知'}`
+      ? `路线：${routeName(env, usedRoute) || '未知'}`
       : pinnedFallback
-        ? `手动固定的「${ROUTE_NAME[pinnedForPlan]}」对本站不通（${switchNotes.join('；')}），已临时改走「${ROUTE_NAME[usedRoute]}」——固定值没有改，想让面板自己挑路线就点「执行方式 → 自动」`
+        ? `手动固定的「${routeName(env, pinnedForPlan)}」对本站不通（${switchNotes.join('；')}），已临时改走「${routeName(env, usedRoute)}」——固定值没有改，想让面板自己挑路线就点「执行方式 → 自动」`
         : `自动改走 —— ${switchNotes.join('；')}`;
 
     status = res.ok ? 'ok' : 'fail';
@@ -442,7 +491,7 @@ export async function runAccount(env, account) {
     const pinned = String(meta.execution || '');
     if (pinned && isRouteFailure(e)) {
       const pinRoute = (pinned === 'browser' || pinned === 'relay') ? 'relay' : 'server';
-      const cur = ROUTE_NAME[pinRoute] || pinned;
+      const cur = routeName(env, pinRoute) || pinned;
       const otherRoute = pinRoute === 'relay' ? 'server' : 'relay';
       // 另一条路线这次是「用不了」还是「试了也没成」？两种情况给的话必须不一样：
       //   · 用不了（如扩展不在线）→ 打开浏览器/装扩展就会自动重试，切「自动」也救不了；
@@ -450,10 +499,10 @@ export async function runAccount(env, account) {
       const otherSkip = (routeState.find((s) => s.route === otherRoute) || {}).skip || '';
       const triedOther = triedRoutes.includes(otherRoute);
       const advice = otherSkip
-        ? `另一条「${ROUTE_NAME[otherRoute]}」现在也用不了：${otherSkip}`
+        ? `另一条「${routeName(env, otherRoute)}」现在也用不了：${otherSkip}`
         : triedOther
-          ? `另一条「${ROUTE_NAME[otherRoute]}」也试过了，同样没成 —— 两条出口都不通，多半是 Cookie 失效或站点在维护`
-          : `把该账号的「执行方式」切回「自动」，面板会改走「${ROUTE_NAME[otherRoute]}」重试`;
+          ? `另一条「${routeName(env, otherRoute)}」也试过了，同样没成 —— 两条出口都不通，多半是 Cookie 失效或站点在维护`
+          : `把该账号的「执行方式」切回「自动」，面板会改走「${routeName(env, otherRoute)}」重试`;
       message = (message + `　（当前固定走「${cur}」，这条路线对本站不通；${advice}）`).slice(0, 1000);
     }
   }
@@ -461,7 +510,7 @@ export async function runAccount(env, account) {
   const duration = Date.now() - t0;
   const now = Date.now();
   // 失败自诊断：给日志加一句能直接照着做的建议（成功/跳过不打扰）
-  const diag = diagnose({ status, message, detail });
+  const diag = diagnose({ status, message, detail, runtime: env && env.RUNTIME });
   if (diag) message = (message + '｜' + diag).slice(0, 1000);
   await db
     .prepare('INSERT INTO runs(account_id, site, name, status, message, detail, duration_ms, created_at) VALUES(?,?,?,?,?,?,?,?)')

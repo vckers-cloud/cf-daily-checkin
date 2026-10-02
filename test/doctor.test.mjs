@@ -61,4 +61,28 @@ await t('已带诊断不再叠加', () => {
   assert.equal(diagnose({ status: 'fail', message: m, detail: '' }), '');
 });
 
+await t('Docker：人机验证 → 指浏览器中继（不提 CF 网络）', () => {
+  const d = diagnose({ status: 'fail', message: '遇到 Cloudflare 人机验证', detail: 'challenge', runtime: 'docker' });
+  assert.ok(d.includes('浏览器中继'), d);
+  assert.ok(!d.includes('CF 网络'), d);
+  assert.ok(!d.includes('本地网络'), d);
+});
+
+await t('Docker：WAF → 指浏览器中继', () => {
+  const d = diagnose({ status: 'fail', message: 'HTTP 403', detail: '', runtime: 'docker' });
+  assert.ok(d.includes('浏览器中继'), d);
+});
+
+await t('Docker：扩展离线 → 说浏览器中继不可用', () => {
+  const d = diagnose({ status: 'fail', message: '本地中继请求超时：扩展不在线', detail: '', runtime: 'docker' });
+  assert.ok(d.includes('浏览器中继'), d);
+});
+
+await t('CF：人机验证 → 旧文案不变', () => {
+  const d = diagnose({ status: 'fail', message: '遇到滑块验证', detail: '' });
+  assert.ok(!d.includes('浏览器中继'), d);
+  const d2 = diagnose({ status: 'fail', message: '遇到滑块验证', detail: '', runtime: 'workers' });
+  assert.ok(!d2.includes('浏览器中继'), d2);
+});
+
 console.log(`\n${n} 个断言全部通过`);

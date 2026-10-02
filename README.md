@@ -10,6 +10,8 @@
   <a href="CONTRIBUTING.md"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-ffb020"></a>
 </p>
 
+> 💬 遇到签到问题 / 想提建议？先来这里：[NodeSeek 使用反馈收集帖](https://www.nodeseek.com/post-956355-1#1)（反馈集中收集，留言前先看看有没有人遇到过）
+
 ---
 
 ## 部署到 Cloudflare（纯网页，不用装任何东西）
@@ -49,6 +51,35 @@ node deploy.mjs
 </details>
 
 想一步步手动做、或部署报错要弄清原因 → [详细手册](docs/详细手册.md)。
+
+---
+
+## Docker 部署（家里 NAS / 软路由 / 常开主机）
+
+什么时候选它：想用 **Telegram 签到**（只有 Docker 版能跑），或想走**家里宽带的 IPv6**（NodeSeek 这类站点在 Cloudflare 机房网络下不稳定）。
+
+**一键安装**（SSH 连上 NAS，粘贴这一行）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/guoxpeng/daily-checkin-panel/master/install.sh | bash
+```
+
+脚本会：检查 docker → 建 `~/daily-checkin-panel` 目录 → 下载最新配置 → 生成 `.env` → 拉镜像启动。装完浏览器打开 `http://你的NAS_IP:8787`，首次设置管理密码，之后用法和 Cloudflare 版完全一样。数据全在 `./data/checkin.sqlite` 一个文件里，备份拷走就行。**重复跑一遍就是更新**（数据不受影响）。
+
+<details>
+<summary>手动安装（不想用脚本的话）</summary>
+
+```bash
+cp .env.example .env   # 可选：填 ENCRYPT_KEY（openssl rand -base64 32 生成；不填面板自动生成）
+docker compose up -d
+```
+</details>
+
+- 镜像：`nameguoguo/daily-checkin-panel`（amd64+arm64，NAS/树莓派能用），每次 push 代码后 CI 自动构建推送；
+- 更新：`docker compose pull && docker compose up -d`；
+- 默认 host 网络模式（直接拿主机 IPv6，给 NodeSeek 直连用），Mac/Windows 的 Docker Desktop 请用 Linux 主机。
+
+完整说明（Telegram 签到步骤、反向代理、常见问题）→ [docker/README.md](docker/README.md)。
 
 ---
 
@@ -154,9 +185,11 @@ node deploy.mjs
 | 文件 | 内容 |
 |---|---|
 | [docs/Cloudflare部署清单.md](docs/Cloudflare部署清单.md) | 部署要填什么：D1 名字、绑定名、`database_id`、各变量 |
+| [docker/README.md](docker/README.md) | Docker 部署完整说明：快速开始、配置、更新、host 网络、Telegram 签到、反向代理、FAQ |
 | [docs/详细手册.md](docs/详细手册.md) | 手动部署、执行模式、内置站点、社区适配、FAQ、备份与结构 |
 | [SECURITY.md](SECURITY.md) / [CONTRIBUTING.md](CONTRIBUTING.md) | 安全说明 / 怎么贡献一个站点适配 |
 | [CHANGELOG.md](CHANGELOG.md) | 每一版改了什么 |
+| [NodeSeek 使用反馈收集帖](https://www.nodeseek.com/post-956355-1#1) | 用户反馈集中收集（遇到签到问题先来这里看看/留言） |
 
 ```bash
 node tools/verify.mjs        # 自检：语法 + HTML 配对 + DOM 引用 + 全部单测（CI 跑的是它）
@@ -165,7 +198,7 @@ node tools/release.mjs minor # 发版：自检 → 升版本号 → 写 CHANGELO
 ```
 
 `.github/workflows/` 里：`ci.yml` 每次推送/PR 自检；`release.yml` 推 `v*` tag 自动发 Release；
-`deploy.yml` 是可选手动部署（默认只 dry-run）。零第三方依赖，所以 CI 不需要 `npm install`。
+`deploy.yml` 是可选手动部署（默认只 dry-run）。自检不需要 `npm install`（`telegram` 依赖只在站点模块里动态 import，只有 Docker 镜像构建时才装）。
 
 ```
 wrangler.toml  部署配置（数据库 id、定时触发器）      deploy.mjs  一键部署脚本

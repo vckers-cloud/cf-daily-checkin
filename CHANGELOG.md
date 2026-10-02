@@ -14,6 +14,43 @@
 ### 修复
 - 
 
+## [2.20.0] - 2026-10-01
+
+### 新增
+- 后台凭据自动续期：独立于签到流程，调度器每小时扫一遍账号，做两件事——① 有 renew() 的站点（如 Akile）：快过期的凭据提前换新并回写（Akile 先接入：到期前 12 小时触发）；② 纯 Cookie 的站点（没有刷新接口、面板手里也没密码，技术上续不了）：凭据里写着到期时间的（WordPress 会话 / JWT），剩不到 24 小时就提前预警，提醒去重新抓（每天每个账号一次）。天翼云盘、V2Board 存的是账号密码、每次签到本来就是重新登录，天生不会"过期"，不需要续。
+- 续期走「扩展在线先走用户本地网络、再直连兜底」两条路线；只有「网络失败」才换路线重试，「站点拒绝」直接记原因不再空试。
+- 续期状态可视化：账号站点名悬浮提示新增「自动续期：上次成功 …」/「自动续期失败（原因 + 详情 + 每小时重试说明）」；失败且凭据剩不到 6 小时就过期时推送提醒（每天一次），不等死了才让用户手动。
+
+### 修复
+- Akile 续期失败原因不再「一律吞掉」：区分「网络没通」（值得重试）和「站点拒绝」（旧 token 已死），后台续期失败会记下具体原因（HTTP 状态 + 网站回馈），而不是第二天莫名其妙报「请重新获取」。签到主流程的报错文案保持不变。
+
+## [2.19.1] - 2026-09-30
+
+### 新增
+- 
+
+### 修复
+- Cloudflare 构建失败：Telegram 签到（Docker 专属）的 gramjs 动态 import 被 esbuild 静态分析到，试图把 net/fs 等 Node 内置模块打进 Workers 包，导致 v2.18.0 起所有 CF 构建失败、线上一直停在 v2.17.1。现改用变量拼模块名让打包器跳过（Workers 上该路径本就被 requiresNode 拦截、永远不会执行；Docker/Node 运行时 import 验证通过）。
+
+## [2.19.0] - 2026-09-30
+
+### 新增
+- Docker 版界面适配：没有「Cloudflare 机房」这条路线，界面全部换成诚实的叫法。「CF 网络」→「本机直连」（NAS 家庭 IP 直接请求），「本地网络」→「浏览器中继」（扩展在真实浏览器标签页里代发请求，真浏览器指纹 + 你的登录态）。执行方式徽章、切换按钮文案、站点提示（NodeSeek/吾爱/糊涂鳄/看雪/Discuz/V2EX）、失败诊断建议、出口检测说明、设置页扩展说明，全部按运行环境（`RUNTIME`）自动切换；Cloudflare 版保持原样。
+
+### 修复
+- Docker 版 NodeSeek 报「人机验证」时不再胡说「切换到 CF 网络」：本机直连用的是程序指纹，过不了真人检测，诊断现在会直接建议把该账号切到「浏览器中继」。
+
+## [2.18.0] - 2026-09-30
+
+### 新增
+- Docker 运行方式：一套代码两种跑法，`docker compose up -d` 即可在本地/NAS/服务器上跑面板。`docker/server.mjs` 把 Worker 的 fetch/scheduled 原样跑在 Node 24 上，`docker/adapter.mjs` 用 Node 内置 `node:sqlite` 实现 D1 兼容层（prepare/bind/run/all/first/batch，batch 事务性），静态资源走 `public/` 目录并沿用 `public/_headers` 头规则与 SPA 回退。数据全在 `./data/checkin.sqlite` 一个文件里，备份拷走就行。ENCRYPT_KEY 可选（不填面板自动生成存库，`openssl rand -base64 32` 生成）。CI（`.github/workflows/docker.yml`）在每次 push 后自动构建多架构镜像（amd64+arm64）推送到 Docker Hub（`nameguoguo/daily-checkin-panel`），不需要人工 `docker push`；服务器上 `docker compose pull && docker compose up -d` 更新，或加 `--profile auto-update` 让 watchtower 全自动更新。说明见 `docker/README.md`。
+- Telegram 签到（**Docker 版专属**）：用 MTProto（gramjs）以「你的 Telegram 账号」身份，给指定的 TG 机器人/群发签到指令（如 `/checkin`），读 bot 回执判定成功/已签到。Cloudflare Workers 没有 TCP socket 跑不了这个，所以新站 `src/sites/telegram.js` 声明了 `requiresNode`，runner 在 Workers 上会直接给明确提示（"需要 Docker 版"）而不空转重试。首次用 `docker exec -it <容器> node docker/telegram-login.mjs` 交互登录一次拿 Session（api_id/api_hash 去 my.telegram.org 申请），粘到面板账号里即可。Dockerfile 构建时 `npm install` 装 `telegram` 依赖（CI 自检不需要装，模块里是动态 import）。步骤见 `docker/README.md「Telegram 签到」`。
+- Docker 默认改用 host 网络模式：容器直接用主机的网络栈，拿到 IPv6 出口。之前默认的 bridge 是纯 IPv4，而 NodeSeek 会把无 IPv6 的请求踢到 IPv6 提示页，导致 Docker 直连签到也失败（和 CF 机房一样）。Mac/Windows 的 Docker Desktop 不支持 host 模式，请用 Linux 主机；改回 bridge 的方法写在 `docker-compose.yml` 注释和 `docker/README.md「网络模式」` 里。
+- README 文档表新增 [NodeSeek 使用反馈收集帖](https://www.nodeseek.com/post-956355-1#1)。
+
+### 修复
+- 
+
 ## [2.17.1] - 2026-09-30
 
 ### 新增

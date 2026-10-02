@@ -13,7 +13,7 @@
 //   ④ 手动固定的路线不许被偷偷换掉。
 import assert from 'node:assert/strict';
 import { encryptJSON } from '../src/crypto.js';
-import { runAccount, isRouteFailure } from '../src/runner.js';
+import { runAccount, isRouteFailure, routeName } from '../src/runner.js';
 import { OUTCOME } from '../src/lib/signals.js';
 import { getSite } from '../src/sites/index.js';
 
@@ -411,6 +411,14 @@ await t('isRouteFailure：网络层失败算「值得换路」，业务/验证�
   enriched.outcome = OUTCOME.NEED_LOGIN;
   assert.equal(isRouteFailure(enriched), false, 'need_login 必须优先于文案里的关键词');
   assert.equal(isRouteFailure(new Error('签到失败：还没绑定手机号')), false);
+});
+
+await t('路线名：Docker 版叫本机直连/浏览器中继，CF 版叫 CF 直连/本地网络', () => {
+  assert.equal(routeName({}, 'server'), 'CF 直连');
+  assert.equal(routeName({}, 'relay'), '本地网络');
+  assert.equal(routeName({ RUNTIME: 'docker' }, 'server'), '本机直连');
+  assert.equal(routeName({ RUNTIME: 'docker' }, 'relay'), '浏览器中继');
+  assert.equal(routeName({ RUNTIME: 'docker' }, 'unknown'), 'unknown');
 });
 
 console.log(`\n${n} 组通过`);

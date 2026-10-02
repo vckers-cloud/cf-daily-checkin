@@ -49,7 +49,8 @@ async function writeCfg(obj) {
 }
 
 // 面板地址规范化 + 校验。Cookie / API Key 都要发到这里，
-// 所以除本机回环调试外一律要求 https（http 会让凭据在网络上明文传输）。
+// 公网地址一律要求 https（http 会让凭据明文经过公网）；
+// 局域网地址允许 http（家里 NAS 常用 http://192.168.x.x，流量不出内网）。
 function normalizePanelUrl(raw) {
   const s = String(raw || '').trim().replace(/\/+$/, '');
   if (!s) return '';
@@ -60,12 +61,30 @@ function normalizePanelUrl(raw) {
     return u.origin + path;
   } catch { return ''; }
 }
+// 局域网主机名：回环、私有 IPv4 段、IPv6 本地地址、.local / 单标签主机名（mDNS、NetBIOS）
+function isLanHost(hostname) {
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h === '::1') return true;
+  if (!h.includes('.') || h.endsWith('.local')) return true;
+  const v4 = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) {
+    const n = v4.slice(1).map(Number);
+    if (n.some((x) => x > 255)) return false;
+    if (n[0] === 10 || n[0] === 127) return true;
+    if (n[0] === 172 && n[1] >= 16 && n[1] <= 31) return true;
+    if (n[0] === 192 && n[1] === 168) return true;
+    if (n[0] === 169 && n[1] === 254) return true;
+    return false;
+  }
+  if (h.includes(':')) return h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd');
+  return false;
+}
 function panelUrlProblem(url) {
   let u;
   try { u = new URL(url); } catch { return '面板地址不是合法网址（示例：https://checkin.example.com）'; }
-  const loop = u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1' || u.hostname === '[::1]';
-  if (u.protocol !== 'https:' && !loop) return '面板地址必须是 https —— 否则 Cookie 和 API Key 会明文上网';
-  return '';
+  if (u.protocol === 'https:') return '';
+  if (u.protocol === 'http:' && isLanHost(u.hostname)) return '';
+  return '面板地址必须是 https（局域网地址如 http://192.168.x.x:8787 可以用 http）—— 否则 Cookie 和 API Key 会明文经过公网';
 }
 // 读取输入框里的面板地址并校验；不合格时把提示写进状态栏并返回空串
 async function panelUrlFromInput(showErr = status) {

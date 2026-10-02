@@ -1,0 +1,11 @@
+# 构建上下文瘦身：镜像里不需要这些
+.git
+.github
+.gitignore
+node_modules
+data/
+test/
+tools/
+.vscode
+*.md
+LICENSE
